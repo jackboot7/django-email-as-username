@@ -3,9 +3,11 @@ Django Email as Username
 
 **User authentication with email addresses instead of usernames.**
 
-**Author:** Tom Christie, [@_tomchristie][1].
+**Author:** Tom Christie, [@_tomchristie][tom-twitter].
 
-**See also:** [django-email-login][2], [django-email-usernames][3].
+**See also:** [django-email-login], [django-email-usernames], [django-user-accounts].
+
+[![Build Status][build-status-image]][travis]
 
 Overview
 ========
@@ -16,6 +18,14 @@ Allows you to treat users as having only email addresses, instead of usernames.
 2. Patches the Django admin to handle email based user authentication.
 3. Overides the `createsuperuser` command to create users with email only.
 4. Treats email authentication as case-insensitive.
+5. Correctly supports internationalised email addresses.
+
+
+Requirements
+============
+
+Known to work with Django >= 1.3
+
 
 Installation
 ============
@@ -24,7 +34,8 @@ Install from PyPI:
 
     pip install django-email-as-username
 
-Add 'emailusernames' to INSTALLED_APPS.
+Add `emailusernames` to `INSTALLED_APPS`.
+Make sure to include it further down the list than `django.contrib.auth`.
 
     INSTALLED_APPS = (
         ...
@@ -36,6 +47,7 @@ Set `EmailAuthBackend` as your authentication backend:
     AUTHENTICATION_BACKENDS = (
         'emailusernames.backends.EmailAuthBackend',
     )
+
 
 Usage
 =====
@@ -65,6 +77,12 @@ user exists.
 
     if user_exists('someone@example.com'):
         ...
+
+Both functions also take an optional queryset argument if you want to filter
+the set of users to retrieve.
+
+    user = get_user('someone@example.com',
+                    queryset=User.objects.filter('profile__deleted=False'))
 
 Updating users
 --------------
@@ -106,8 +124,11 @@ authenticating, creating and updating users:
 Using Django's built-in login view
 ----------------------------------
 
-If you're using `django.contrib.auth.views.login` in your urlconf, you'll want to
-make sure you pass through `EmailAuthenticationForm` as an argument to the view.
+If you're using `django.contrib.auth.views.login` in your urlconf, you'll want
+to make sure you pass through `EmailAuthenticationForm` as an argument to
+the view.
+
+    from emailusernames.forms import EmailAuthenticationForm
 
     urlpatterns = patterns('',
         ...
@@ -116,77 +137,165 @@ make sure you pass through `EmailAuthenticationForm` as an argument to the view.
         ...
     )
 
-Upgrading
-=========
 
-Once you have implemented emails as usernames, you're ready to convert any
-existing users.
+Management commands
+===================
 
-First, in order to modify the original usernames, temporarily remove the
-'emailusernames' app from `settings.INSTALLED_APPS`:
+`emailusernames` will patch up the `syncdb` and `createsuperuser` managment
+commands, to ensure that they take email usernames.
 
-    INSTALLED_APPS = (
-        ...
-        #'emailusernames',
-    )
+    bash: ./manage.py syncdb
+    ...
+    You just installed Django's auth system, which means you don't have any superusers defined.
+    Would you like to create one now? (yes/no): yes
+    E-mail address:
 
-You will need to restart your Django instance to activate this change.
 
-Then, within the Django project's environment (e.g., in `python manage.py
-shell`, run this code:
+Migrating existing projects
+===========================
 
-    from django.db                  import IntegrityError, transaction
-    from django.conf                import settings
-    from django.contrib.auth.models import User
-    from emailusernames.utils       import _email_to_username
+`emailusernames` includes a function you can use to easily migrate existing
+projects.
 
-    # Print a nice header.
+The migration will refuse to run if there are any users that it cannot migrate
+either because they do not have an email set, or because there exists a
+duplicate email for more than one user.
 
-    title   = 'Upgrading: No More Usernames!'
-    border  = len(title) + 2
+There are two ways you might choose to run this migration.
 
-    print('')
-    print('=' * border)
-    print('%s' % title)
+Run the update manually
+-----------------------
 
-    # Upgrade database.
+Using `manage.py shell`:
 
-    tot    = User.objects.count()
-    failed = 0
+    bash: python ./manage.py shell
+    >>> from emailusernames.utils import migrate_usernames
+    >>> migrate_usernames()
+    Successfully migrated usernames for all 12 users
 
-    for user in User.objects.all():
-        user.username = _email_to_username(user.email)
-        try:
-            sid = transaction.savepoint()
-            user.save()
-            transaction.savepoint_commit(sid)
-        except IntegrityError:
-            failed += 1
-            print(
-                "Could not convert user with username '%s' because the email "
-                "<%s> is already taken." % (user.username, user.email)
-            )
-            transaction.savepoint_rollback(sid)
+Run as a data migration
+-----------------------
 
-    print("Converted %d of %d users (%d failed)." % (tot - failed, tot, failed))
-    print('=' * border)
+Using `south`, and assuming you have an app named `accounts`, this might look
+something like:
 
-If any user shares an email address with another user, it cannot be converted
-as usernames must be unique. This script will convert as many as possible and
-any other users that cannot be converted will be printed.
+    bash: python ./manage.py datamigration accounts email_usernames
+    Created 0002_email_usernames.py.
 
-Finally, re-enable the 'emailusernames' app by uncommenting the line in
-`settings.INSTALLED_APPS`:
+Now edit `0002_email_usernames.py`:
 
-    INSTALLED_APPS = (
-        ...
-        'emailusernames',
-    )
+    from emailusernames.utils import migrate_usernames
 
-Don't forget to restart your Django instance again!
+    def forwards(self, orm):
+        "Write your forwards methods here."
+        migrate_usernames()
+
+And finally apply the migration:
+
+	python ./manage.py migrate accounts
+
+
+Running the tests
+=================
+
+If you have cloned the source repo, you can run the tests using the
+provided `manage.py`:
+
+    ./manage.py test
+
+Note that this application (unsurprisingly) breaks the existing
+`django.contrib.auth` tests.  If your test suite currently includes those
+tests you'll need to find a way to explicitly disable them.
 
 Changelog
 =========
+
+1.6.2
+-----
+
+* Fix broken tests
+* Added travis config
+
+1.6.1
+-----
+
+* Fix screwed up packaging.
+
+1.6.0
+-----
+
+* Change field ordering in auth forms.
+* Fix handling of invalid emails in `createsuperuser` command.
+* `EmailAuthBackend` inherits from `ModelBackend`, fixing some permissions issues.
+* Fix `loaddata` and `savedata` fixture commands.
+
+1.5.1
+-----
+**To upgrade from <=1.4.6 you must also run the username migration
+as described above.**
+
+* Fix username hashing bug.
+
+1.5.0
+-----
+
+*  Version bump, since the username hashes changed from 1.4.6 to 1.4.7.  (Bumping to 1.5 should make it more obvious that users should check the changelog before upgrading.)
+
+
+1.4.8
+-----
+
+* Fix syntax error from 1.4.7
+
+1.4.7
+-----
+
+* Support for international domain names.
+* Fix auto-focus on login forms.
+
+1.4.6
+-----
+
+* EmailAuthenticationForm takes request as first argument, same as Django's
+  AuthenticationForm.  Now fixed so it won't break if you didn't specify
+  data as a kwarg.
+
+1.4.5
+-----
+
+* Email form max lengths should be 75 chars, not 70 chars.
+* Use `get_static_prefix` (Supports 1.3 and 1.4.), not `admin_media_prefix`.
+
+1.4.4
+-----
+
+* Add 'queryset' argument to `get_user`, `user_exists`
+
+1.4.3
+-----
+
+* Fix support for loading users from fixtures.
+  (Monkeypatch `User.save_base`, not `User.save`)
+
+1.4.2
+-----
+
+* Fix support for Django 1.4
+
+1.4.1
+-----
+
+* Fix bug with displaying usernames correctly if migration fails
+
+1.4.0
+-----
+
+* Easier migrations, using `migrate_usernames()`
+
+1.3.1
+-----
+
+* Authentication backend now sets `User.backend`.
 
 1.3.0
 -----
@@ -237,6 +346,9 @@ CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE 
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-[1]: http://twitter.com/_tomchristie
-[2]: https://bitbucket.org/tino/django-email-login
-[3]: https://bitbucket.org/hakanw/django-email-usernames
+[tom-twitter]: http://twitter.com/_tomchristie
+[django-email-login]: https://bitbucket.org/tino/django-email-login
+[django-email-usernames]: https://bitbucket.org/hakanw/django-email-usernames
+[django-user-accounts]: https://github.com/pinax/django-user-accounts/
+[travis]: http://travis-ci.org/tomchristie/django-rest-framework?branch=restframework2
+[build-status-image]: https://secure.travis-ci.org/dabapps/django-email-as-username.png
